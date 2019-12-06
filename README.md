@@ -15,7 +15,7 @@ Otherwise, EC2 instances will be used from AWS.
 If the mode `master` is used, exactly `<n-VMs>` instances will be used.
 If the mode `auto` is used, the minimum number of VMs will be created such that there is a `<percentage-confidence>`% chance of finding a golden nonce in `<time-seconds>` seconds. If this is not possible, no computation will be done.
 
-To connect to AWS, read the appendix of the report for setup instructions.
+To connect to AWS, read the appendix of [the report](report/cloud.pdf) for setup instructions.
 
 The other Python scripts in this folder, `timing_parser*.py`, are used for processing the results of the script, for example when it is run as follows:
 
