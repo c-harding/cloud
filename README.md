@@ -1,5 +1,7 @@
 # Cloud Nonce Discovery
 
+Repository: [github.com/xsanda/cloud](https://github.com/xsanda/cloud)
+
 This program will scan for a golden nonce of a given difficulty.
 
 ## Usage

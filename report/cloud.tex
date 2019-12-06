@@ -34,6 +34,8 @@ University of Bristol\\
 
 \section{Introduction}
 
+\textit{The code for this project can be found at \url{https://github.com/xsanda/cloud}.}
+
 Cryptocurrencies such as Bitcoin rely on a system of proof-of-work to ensure that the \textit{blockchain} (sequence of transactions structured in a Merkle Tree~\cite{blockonomi_2018}) is not altered maliciously~\cite{bitcoin}. The idea is that it is computationally expensive to calculate a single entry in the chain, and so it becomes prohibitively expensive to alter history by recomputing a block and all subsequent nodes.
 
 The computationally heavy part of the node calculation is finding the golden nonce: the number $n$ included such that the result of SHA$^2$-hashing the block with the number $n$ appended has a certain number $D$ of leading zeros in its bit-pattern. Because the bits of a SHA hash are approximately uniformly randomly distributed (though not perfectly~\cite{cryptoeprint:2008:441}), the only way of discovering a golden nonce is by testing vast numbers of possibilities (\textit{nonces}).
