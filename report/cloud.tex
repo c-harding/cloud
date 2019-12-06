@@ -1,0 +1,376 @@
+% TEMPLATE for Usenix papers, specifically to meet requirements of
+\documentclass[letterpaper,twocolumn,11pt]{article}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{usenix,epsfig,endnotes, newpxtext, newpxmath, inconsolata, hyperref, filecontents, pgfplots, pgfplotstable, subcaption, nicefrac}
+\usepackage{minted}
+\setlength{\columnsep}{1cm}
+\renewcommand{\theFancyVerbLine}{\scriptsize{\arabic{FancyVerbLine}}}
+\usepackage[margin=2cm]{geometry}
+
+\usepackage[toc,page]{appendix}
+\newcommand*{\Appendixautorefname}{appendix}
+
+\newcommand{\noncepyconstlinenumber}[1]{%
+\immediate\write18{(awk '/^#1 *=/ {print FNR}' ../nonce.py;echo '') | head -1 > cloud.#1.line.tmp}\input{cloud.#1.line.tmp}\unskip%
+}
+\newcommand{\noncepydeflinenumber}[1]{%
+\immediate\write18{(awk '/^def #1 *\\(/ {print FNR}' ../nonce.py;echo '') | head -1 > cloud.#1.line.tmp}\input{cloud.#1.line.tmp}\unskip%
+}
+
+\raggedbottom
+\begin{document}
+
+\title{Using Cloud Services to Distribute an Embarrassingly Parallelisable Proof-of-Work Computation}
+
+%for single author (just remove % characters)
+\author{
+{\rm Charlie Harding}\\
+University of Bristol\\
+} % end author
+
+\maketitle
+
+\tableofcontents
+
+\section{Introduction}
+
+Cryptocurrencies such as Bitcoin rely on a system of proof-of-work to ensure that the \textit{blockchain} (sequence of transactions structured in a Merkle Tree~\cite{blockonomi_2018}) is not altered maliciously~\cite{bitcoin}. The idea is that it is computationally expensive to calculate a single entry in the chain, and so it becomes prohibitively expensive to alter history by recomputing a block and all subsequent nodes.
+
+The computationally heavy part of the node calculation is finding the golden nonce: the number $n$ included such that the result of SHA$^2$-hashing the block with the number $n$ appended has a certain number $D$ of leading zeros in its bit-pattern. Because the bits of a SHA hash are approximately uniformly randomly distributed (though not perfectly~\cite{cryptoeprint:2008:441}), the only way of discovering a golden nonce is by testing vast numbers of possibilities (\textit{nonces}).
+
+This search is \textit{embarrassingly parallelisable}: the different branches of computation can be run in parallel without any need to share any computation data, they only need to be notified when to stop (when another branch has succeeded). This means it can easily be shared by discrete virtual machines, using commercially available cloud services, to share the workload to arrive at a result faster.
+
+In this report, I will look into how to search for a nonce, and then distribute the workload using Amazon's~\cite{aws} cloud services.
+
+\section{Searching for a golden nonce}
+
+The simplest way of finding a golden nonce is to iterate through every possible nonce (the integers $0\leq n< 2^{32}$~\cite{cw1}), calculate the hash, and stop searching when sufficient leading zeros are found.
+
+The basic code to do this can be seen in \autoref{fig:nonce-loop}, implemented in Python. This can be run locally, and for low enough difficulty, this is the fastest way to perform the search, as there is no overhead of starting up a VM: everything is ready to run locally. The time required is approximately exponential in the difficulty (the number of leading zeroes), as can be seen in \autoref{fig:local-graph}.
+
+However, the exact time required is not predictable, as it depends on the block given. The variation in runtime is small for a given block and difficulty (\autoref{fig:local-graph-specific}), but with more blocks it becomes far larger, though with a more consistent exponential mean (\autoref{fig:local-graph-general}).
+
+This is implemented in the Python program using the command-line arguments \texttt{./nonce.py local <block> <difficulty>}, for example \verb|./nonce.py local COMSM0010cloud 24| to find a 24-bit golden nonce for the block \texttt{COMSM0010cloud}.
+
+\begin{figure}
+\begin{minted}[linenos,fontsize=\small]{python}
+from hashlib import sha256
+from itertools import count
+
+def find_nonce(block: bytes,
+               difficulty: int,
+               ) -> (int, int):
+    for nonce in range(start, 2**32):
+        bytestring = build_nonce(block, nonce)
+        hash = sha2(bytestring)
+        zeros = leading_zeros(hash)
+        if zeros >= difficulty:
+            return nonce, zeros
+    return (-1, 0)
+
+
+def build_nonce(
+        block: bytes,
+        number: int) -> bytes:
+    return (block
+        + number.to_bytes(4, byteorder='big'))
+
+def sha2(block: bytes) -> bytes:
+    return sha(sha(block))
+
+def sha(block: bytes) -> bytes:
+    SHA256 = sha256()
+    SHA256.update(block)
+    return SHA256.digest()
+
+def leading_zeros(hash: bytes) -> int:
+    i = 0
+    for c in hash.hex():
+        if c == '0':
+            i += 4
+            continue
+        elif int(c, 16) < 2: i += 3
+        elif int(c, 16) < 4: i += 2
+        elif int(c, 16) < 8: i += 1
+        break
+    return i
+\end{minted}
+\caption{A loop to find a golden nonce.}
+\label{fig:nonce-loop}
+\end{figure}
+
+\begin{figure}[p]
+\begin{subfigure}{\columnwidth}
+\noindent\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}
+\begin{axis}[
+    axis lines=left,
+    ymode=log,
+    log ticks with fixed point,
+    xtick distance=4,
+    xlabel={difficulty (number of leading zeros)},
+    ylabel={nonce search time (s)},
+]
+\addplot plot [error bars/.cd, y explicit, y dir=both]
+    table [col sep=comma,x=D,y=time,y error plus=timebarup,y error minus=timebardown]
+    {local_timing.csv};
+\addplot [red]
+    table [col sep=comma,y={create col/linear regression={y=time}}]
+    {local_timing.csv};
+\end{axis}
+\end{tikzpicture}%
+}
+\caption{Finding a golden nonce for the given block \texttt{COMSM0010cloud}, with a line of linear regression in red.}
+\label{fig:local-graph-specific}
+\end{subfigure}
+\begin{subfigure}{\columnwidth}
+\noindent\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}
+\begin{axis}[
+    axis lines=left,
+    ymode=log,
+    log ticks with fixed point,
+    xtick distance=4,
+    xlabel={difficulty (number of leading zeros)},
+    ylabel={nonce search time (s)},
+]
+\addplot plot [error bars/.cd, y explicit, y dir=both]
+    table [col sep=comma,x=D,y=time,y error plus=timebarup,y error minus=timebardown]
+    {local_timing_general.csv};
+\addplot [red]
+    table [col sep=comma,y={create col/linear regression={y=time}}]
+    {local_timing_general.csv};
+\end{axis}
+\end{tikzpicture}%
+}
+
+\caption{Finding a golden nonce, averaged for 12 different blocks, with a line of linear regression in red.}
+\label{fig:local-graph-general}
+\end{subfigure}
+\unskip\parfillskip 0pt \par
+\caption{The time to find a golden nonce locally.}
+\label{fig:local-graph}
+\end{figure}
+
+\section{Performing the search remotely}\label{section:single-remote}
+
+To save computation locally, and to prepare for scaling up, we can use a virtual machine in the cloud to perform the computationally heavy cloud operations. For this, we need to create an AWS account, and then perform some setup (see~\autoref{section:setup-aws}).
+
+Once the AMI, queue service and authorisation have been set up, it is time to actually run the golden nonce search remotely. The way this is done is by starting up a VM, with the initialisation script set to save the nonce-finding Python script onto the VM and then run it. When creating the VM, we specify the IAM user set up in~\autoref{section:setup-iam-role}, which means that we do not need to worry about transferring credentials to the VM ourself.
+
+This way, the script can be tweaked locally and the latest version will be copied across remotely automatically. As this script is needed anyway to start the process going, using it to transfer the script to be executed also reduces the amount of network connections needed at the start, so the VM can get under way as quickly as possible.
+
+The VM will call exactly the same function to do the calculation as before (\verb|find_nonce| in~\autoref{fig:nonce-loop}), but then instead of printing the result it will use AWS's Simple Queue Service to transmit it back to the user. Included in this transfer will also be the timestamp of the start of the search. This is so that any previous items still on the queue (from failed previous runs, or duplicates from SQS' ``At-Least-Once Delivery'' system~\cite{sqs-al1}) can be ignored.
+
+The program running locally, having told the EC2 instance to start, polls the SQS queue for a response. When it receives a response (either a successful golden nonce or a report that none was found in the whole search space), it tells the VM to terminate, and reports the result back to the user.
+
+As shown in~\autoref{fig:single-graph}, the runtime of this algorithm is similar for large enough difficulty (at least $D = 24$). This does of course depend on the ratio of speed of the local processor, and it will also be affected by other background tasks that are running on my local processor.
+
+However, the far more significant difference is the startup time of at least 30 seconds before the VM is ready to start computation, shown in green on these graphs. As the local processor is able to find a golden nonce at difficulty $D = 20$ in less than 30 seconds, it is not worth starting a VM at all for such computations.
+
+\begin{figure}[p]
+\noindent\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}
+\begin{axis}[
+    axis lines=left,
+    ymode=log,
+    log ticks with fixed point,
+    xtick distance=4,
+    xlabel={difficulty (number of leading zeros)},
+    ylabel={nonce search time (s)},
+]
+\addplot+[blue,mark options={fill=blue}]
+    table [col sep=comma,x=D,y=time] {local_timing.csv};
+\addplot+[red,mark options={fill=red}]
+    table [col sep=comma,x=D,y=time] {single_timing.csv};
+\addplot+[ForestGreen,mark options={fill=ForestGreen}]
+    table [col sep=comma,x=D,y=startup] {single_timing.csv};
+\end{axis}
+\end{tikzpicture}%
+}
+\noindent\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}
+\begin{axis}[
+    axis lines=left,
+    xtick distance=4,
+    xlabel={difficulty (number of leading zeros)},
+    ylabel={nonce search time (s)},
+]
+\addplot+[blue,mark options={fill=blue}]
+    table [col sep=comma,x=D,y=time] {local_timing.csv};
+\addplot+[red,mark options={fill=red}]
+    table [col sep=comma,x=D,y=time] {single_timing.csv};
+\addplot+[ForestGreen,mark options={fill=ForestGreen}]
+    table [col sep=comma,x=D,y=startup] {single_timing.csv};
+\end{axis}
+\end{tikzpicture}%
+}
+\caption{The runtime of nonce calculation on the server (in red) compared to locally (in blue), of which the green part of the server runtime is used for startup, in both logarithmic (top) and linear (bottom) vertical scales.}\label{fig:single-graph}
+\end{figure}
+
+This is implemented in the Python program using the command-line arguments \texttt{./nonce.py master <block> <difficulty> 1}, for example \verb|./nonce.py master COMSM0010cloud 30 1| to find a 30-bit golden nonce. The mode \texttt{master} is used because it then calls \texttt{slave} mode on each VM it starts up.
+
+\section{Parallelising the remote computation}
+
+Now that we have the computation running on a remote virtual machine, we can spread the load between multiple virtual machines to speed up the search. This means dividing the search space up, such that each VM scans a roughly equal range of distinct nonces.
+The simplest way of dividing the space with $n$ VMs numbered $0\leq i<n$ is for VM $i$ to start at nonce $i$, and then increment by $n$ each time, until the maximum 32-bit integer ($2^{32}-1=4\,294\,967\,295$) is exceeded. Now every remote node needs to be passed its starting point $i$ and the number of VMs $i$. Otherwise the operation per VM is unchanged from~\autoref{section:single-remote}.
+
+In the local master program, the process is also much the same. One key distinction is the termination condition: if one success is reported then all instances are terminated, but only when all $n$ send failure are they terminated from failure. This is because one VM may exhaust its search space before another has found the golden nonce in its own search space, due to variation in run speed, and to ensure the golden nonce is found we must wait for all VMs to report failure before failing.
+
+For small values of $D$, the runtime for the parallelised golden nonce search increases linearly with $n$. This is because the computation is such a small part of the overall runtime, and the iteration to create the VMs (typically around 2 seconds per VM) increases directly proportionally to the number of VMs.
+
+This is implemented in the Python program using the command-line arguments \texttt{./nonce.py master <block> <difficulty> <VMs>}, for example \verb|./nonce.py master COMSM0010cloud 30 8| to find a 30-bit golden nonce using 8 VMs.
+
+\section{Estimating runtime}
+
+In order to estimate how long it will take to find the golden nonce, we need to estimate how many nonces need to be searched. Because the bits of a SHA hash are approximately uniformly randomly distributed (though not perfectly~\cite{cryptoeprint:2008:441}), the probability of any given nonce producing a hash with a given binary digit being zero is $0.5$.
+
+Because the digits in a hash can be assumed to be independent, the probability of $D$ given digits, for example the first $D$ digits, all being zero is simply the $D$th power of one half, $0.5^D$. Each nonce we test produces an independently distributed hash, and we would like to work out the number of trials needed to find a success, which occurs with probability $0.5^D$.
+
+This means we can use the geometric distribution~\cite{geometric} to model the number of nonces to search, $X \sim Geo\left(0.5^D\right)$. The expected number to search $E\left(X\right)$ is $\nicefrac{1}{0.5^D} = 2^D$ nonces. If we would like to find a golden nonce with a probability of $p$, then we need to search $x$ nonces, such that $P\left(X\leq x\right) \geq p$.
+\begin{align*}
+    P\left(X\leq x\right) &\geq p \\
+    1-\left(1-0.5^D\right)^x &\geq p \\
+    \left(1-0.5^D\right)^x &\leq 1-p \\
+    x\log\left(1-0.5^D\right) &\leq \log\left(1-p\right) \\
+    x &\geq \nicefrac{\log\left(1-p\right)}{\log\left(1-0.5^D\right)} \\
+\end{align*}
+
+However, if we want to estimate runtime, then we do not want to simply find the number of hashes we need to test to find a golden nonce: there does not always exist any golden nonce within the 32-bit integer space from which we are taking our nonces. This means that to get a result, either success or failure, with $p$ probability, it is enough to simply search $x = \min\left(\nicefrac{\log\left(1-p\right)}{\log\left(1-0.5^D\right)}, 2^{32}\right)$ nonces.
+
+For example, if we wish to find a 30-bit golden nonce with 90\% probability, it is enough to search $\nicefrac{\log\left(1-p\right)}{\log\left(1-0.5^D\right)} = \nicefrac{\log0.1}{\log\left(1-0.5^{30}\right)} \approx 2\,472\,381\,917$ possibilities.
+
+However, if we want to find a nonce 32-bit golden nonce with 90\% probability, we would need to search $\nicefrac{\log0.1}{\log\left(1-0.5^{32}\right)} \approx 9\,889\,527\,670$ possibilities, more than $2^{32}$, so we can get a result (possibly failure) after searching just $2^{32}$ nonces.
+
+From our experiments, we found that 165\,000 nonces can be hashed and checked per second. This means that the entire space can be searched in $\nicefrac{2^{32}}{165\,000} = 26\,000$ seconds, or 7 hours. It then takes 2 seconds per VM to request that EC2 creates the instances, plus 30 seconds of loading time for the VMs in parallel. Therefore, in order to determine whether there is a $D$-bit golden nonce with confidence $p$ in time $t$, we need to test $$x = \min\left(\frac{\log\left(1-p\right)}{\log\left(1-0.5^D\right)},2^{32}\right)$$ nonces, taking $$\frac{x}{165\,000}$$ seconds of computation. This means the total runtime in seconds is $$\frac{x}{165\,000n}+30+2n$$ when running across $n$ VMs.
+
+\begin{align*}
+    \frac{x}{165\,000n}+30+2n &\leq t\\
+    \frac{x}{165\,000n} &\leq t-2n-30\\
+    \frac{x}{165\,000} &\leq n\left(t-2n-30\right)\\
+    2n^2 - n\left(t-30\right) + \frac{x}{165\,000} &\leq 0
+\end{align*}
+This yields a lower bound for the number of machines as $$n \geq \frac{t-30-\sqrt{\left(t-30\right)^2-8\frac{x}{165\,000}}}{4}$$ and an upper bound of $$n \leq \frac{t-30+\sqrt{\left(t-30\right)^2-8\frac{x}{165\,000}}}{4}$$ using the quadratic formula, where $x = \min\left(\nicefrac{\log\left(1-p\right)}{\log\left(1-0.5^D\right)},2^{32}\right)$. When these overlap, and so there are no possible (integer) values for $n$, the computation is not possible in the time given.
+
+Note that, as $p$ tends to 100\%, $\nicefrac{\log\left(1-p\right)}{\log\left(1-0.5^D\right)}$ tends to positive infinity, so we set $x$ is set to $2^{32}$ when $p$ is provided as 100\%.
+
+This is implemented in the Python program using the command-line arguments \texttt{./nonce.py auto <block> <difficulty> <time-seconds> <percentage-confidence>}, for example \verb|./nonce.py auto COMSM0010cloud 30 600 90| to find a 30-bit golden nonce in 600 seconds (10 minutes) with 90\% confidence.
+
+\section{Conclusion}
+
+Cloud computing provides a way to easily spread computation out over many different compute nodes without a great deal of initial investment. The result of this is that it can be used to perform calculations significantly faster than would be possible locally, but more importantly it is possible to build applications that can scale as needed by using more cloud resources when demand increases. In my own experiments, I found that the speed per computation on a VM is comparable to that of a local computer, plus some start-up overhead, but the performance gains really come when scaling.
+
+If I were to build my own system using cloud infrastructure, I would probably look into keeping the VMs running between requests, only shutting them down after the request volume has substantially dropped, and only starting up when it starts to climb again, to save the time of the VMs constantly starting up and terminating.
+
+\begin{filecontents}{\jobname.bib}
+    @misc{bitcoin, title={Blockchain guide - {Bitcoin}}, howpublished={\url{https://bitcoin.org/en/blockchain-guide#proof-of-work}}, journal={Bitcoin}} 
+
+    @misc{blockonomi_2018, title={What is a {Merkle} Tree? {Beginner's} Guide to this Blockchain Component}, howpublished={\url{https://blockonomi.com/merkle-tree/}}, journal={Blockonomi}, year={2018}, month={Jul}}
+    @misc{cryptoeprint:2008:441,
+        author = {Gaetan Leurent and Phong Q. Nguyen},
+        title = {How Risky is the Random-Oracle Model?},
+        howpublished = {Cryptology ePrint Archive, Report 2008/441},
+        year = {2008},
+        note = {\url{https://eprint.iacr.org/2008/441}},
+    }
+    @misc{aws, title={{Amazon Web Services}}, howpublished={\url{https://aws.amazon.com/}}, journal={Amazon}}
+
+    @misc{cw1, title={Horizontal Scaling for an Embarrassingly Parallel Task: Blockchain Proof-of-Workin the Cloud}, url={https://www.ole.bris.ac.uk/bbcswebdav/pid-3922660-dt-content-rid-12557842_2/courses/COMSM0010_2019_TB-1/CW1_2019(1).pdf}, journal={COMSM0010 Cloud Computing}, publisher={University of Bristol}, author={Cliff, Dave}, year={2019}, month={Oct}}
+    @misc{aws-ami, title={{Amazon Machine Images} ({AMI})}, journal={{AWS}: {Amazon Elastic Compute Cloud}}, publisher={Amazon}, howpublished={\url{https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/AMIs.html}}}
+    @misc{aws-sqs, title={{Amazon Simple Queue Service}}, journal={Amazon}, publisher={Amazon}, howpublished={\url{https://aws.amazon.com/sqs/}}}
+    @misc{sqs-al1, title={{Amazon} {SQS} Standard Queues}, journal={{Amazon Simple Queue Service}}, publisher={Amazon}, howpublished={\url{https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/standard-queues.html}}}
+    @misc{geometric, title={Geometric distribution}, journal={Univariate Distribution Relationships}, publisher={William & Mary}, author={Larry Leemis}, howpublished={\url{http://www.math.wm.edu/~leemis/chart/UDR/PDFs/Geometric.pdf}}}
+}
+
+\end{filecontents}
+
+\bibliographystyle{acm}
+\bibliography{\jobname}
+
+% \theendnotes
+
+\begin{appendices}
+\section{Setting up AWS}\label{section:setup-aws}
+Once an AWS account has been created, we need to perform some setup.
+
+\subsection{Setting up the Amazon Machine Image}
+
+Firstly, we can either use the public Amazon Machine Image (AMI~\cite{aws-ami}) that I created, or create our own. A custom AMI is used so that the correct version of Python and its package \texttt{boto3} are preinstalled, saving time every time a VM starts up.
+
+The one already created exists in the region \texttt{us-east-2}, and has the ID \texttt{ami-0ad788d4ae566815b}, but can easily be replicated as follows:
+
+\begin{enumerate}
+\item Launch a new EC2 instance using Amazon Linux, for example \textit{Amazon Linux AMI 2018.03.0 (HVM), SSD Volume Type}.
+\item Choose \textit{t2.micro} as the instance type.
+\item Create a key pair as necessary to allow for shell access into the VM.
+\item Connect by SSH to the VM, and run the following commands:
+\begin{minted}[fontsize=\small]{bash}
+sudo -s
+yum install -y python36
+python3 -m pip install --upgrade pip
+python3 -m pip install boto3 botocore
+\end{minted}
+\item Create an image from the running instance, using the AWS console website.
+\item Once the image shows as `available' on the AMI page of the AWS console, make a note of the AMI ID.
+\item Terminate the running instance.
+\item Replace the value of the constant \verb|AMI| in \texttt{nonce.py} (line~\noncepyconstlinenumber{AMI}) with the newly created AMI instance.
+\end{enumerate}
+
+\subsection{Setting up the queue}
+
+In order for the VMs to return their status (success or search space exhaustion), a queue is required. For this, we can use Amazon's Simple Queue Service (SQS~\cite{aws-sqs}).
+
+\begin{enumerate}
+\item Open the Simple Queue Service in the AWS Console.
+\item Click to create a new queue in the same region as your AMI (\texttt{us-east-2} for the provided AMI).
+\item Set the name for the queue, for example ``\texttt{NonceOutput}''.
+\item Set the queue type to Standard.
+\item Create the queue without further configuration.
+\item Replace the value of the constant \verb|QUEUE_NAME| in \texttt{nonce.py} (line~\noncepyconstlinenumber{QUEUE_NAME}) with the name chosen for this queue, if a different name is chosen to ``\texttt{NonceOutput}''.
+\end{enumerate}
+
+\subsection{Setting up the local script's permissions}
+
+In order for the local script to start up EC2 instances and to read from the queue, a new IAM (Identity and Access Management) user is required.
+
+\begin{enumerate}
+\item Open the Users tab of the IAM service in the AWS Console.
+\item Click to create a new user.
+\item Assign them a username, for example ``\texttt{nonce}''.
+\item Attach the following permissions directly to them:
+\begin{itemize}
+    \item \texttt{AmazonEC2FullAccess}
+    \item \texttt{AmazonSQSFullAccess}
+    \item \texttt{IAMFullAccess}
+\end{itemize}
+\item No tags are needed for this user.
+\item Create the user.
+\item Store the access key in your local computer user's AWS config file (\verb|~/.aws/config|), by using the following template and replacing the \texttt{AAA} and \texttt{aaa} with the \textit{Access key ID} and \textit{Secret access key} presented in the AWS Console.
+\begin{verbatim}
+[default]
+aws_access_key_id=AAA
+aws_secret_access_key=aaa
+\end{verbatim}
+\end{enumerate}
+
+\subsection{Setting up the remote VMs' permissions}\label{section:setup-iam-role}
+
+In order for the remote script to push to the queue, a new IAM (Identity and Access Management) role is required.
+
+\begin{enumerate}
+\item Open the Roles tab of the IAM service in the AWS Console.
+\item Click to create a new role.
+\item Select EC2 as the service that will use this role.
+\item Attach the following permissions directly to them:
+\begin{itemize}
+    \item \texttt{AmazonSQSFullAccess}
+\end{itemize}
+\item No tags are needed for this role.
+\item Assign the role a name, for example ``\texttt{NonceQueueRole}''.
+\item Create the role.
+\item In the role's summary page, copy the \textit{Instance Profile ARN}, and store it in the constant \verb|IAM| in \texttt{nonce.py} (line~\noncepyconstlinenumber{IAM}).
+\end{enumerate}
+
+\end{appendices}
+
+\end{document}
