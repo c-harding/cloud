@@ -2,7 +2,7 @@
 
 import sys
 from hashlib import sha256
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Union
 from shlex import quote
 from math import log, sqrt, ceil, floor
@@ -74,8 +74,12 @@ def create_nonce_VM(block, difficulty, step=1, start=0, id=""):
     return instance
 
 
-def master_nonce_search(block, difficulty, n):
+def master_nonce_search(block, difficulty, n, timeout):
     start_time = datetime.now()
+    if timeout > 0:
+        end_time = start_time + timedelta(seconds=timeout)
+    else:
+        end_time = datetime.max
     id = str(start_time.timestamp())
     ec2 = boto3.resource('ec2', region_name=REGION)
     instances = []
@@ -92,7 +96,12 @@ def master_nonce_search(block, difficulty, n):
             print(f'All running after {datetime.now() - start_time}')
         queue = get_queue()
         while True:
-            for message in queue.receive_messages(WaitTimeSeconds=20, MessageAttributeNames=['All']):
+            remainingTime = (end_time - datetime.now()).total_seconds()
+            if remainingTime <= 0:
+                print('Timeout, no results found')
+                break
+            remainingTime = min(20, remainingTime)
+            for message in queue.receive_messages(WaitTimeSeconds=remainingTime, MessageAttributeNames=['All']):
                 if (message.message_attributes is not None
                         and 'Id' in message.message_attributes
                         and message.message_attributes['Id']['StringValue'] == id):
@@ -184,10 +193,12 @@ def main():
         print_nonce_result(*find_nonce(block, difficulty, 1, 0))
     elif mode == 'master':
         n = get_int_arg(4, 1)
-        master_nonce_search(block, difficulty, n)
+        timeout = get_int_arg(5, -1)
+        master_nonce_search(block, difficulty, n, timeout)
     elif mode == 'auto':
         t = get_int_arg(5, 600)
-        p = get_int_arg(5, 90)
+        p = get_int_arg(6, 90)
+        timeout = get_int_arg(7, -1)
         print(f'{t} seconds requested to find a golden nonce with',
               f'{difficulty} bits with {p}% confidence')
         # found using the quadratic formula, and explained in the report
@@ -203,7 +214,7 @@ def main():
             print('No such values for n exist, aborting')
         else:
             print(f'Chosen n = {ceil(lower_bound)}')
-            master_nonce_search(block, difficulty, ceil(lower_bound))
+            master_nonce_search(block, difficulty, ceil(lower_bound), timeout)
     else:
         print("Error: no mode given. Modes: slave, local, master, auto",
               file=sys.stderr)

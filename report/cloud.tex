@@ -22,12 +22,11 @@
 
 \title{Using Cloud Services to Distribute an Embarrassingly Parallelisable Proof-of-Work Computation}
 
-%for single author (just remove % characters)
 \author{
 {\rm Charlie Harding}\\
 University of Bristol\\
 \href{mailto:charlie.harding@bris.ac.uk}{\nolinkurl{charlie.harding@bris.ac.uk}}
-} % end author
+}
 
 \maketitle
 
@@ -177,6 +176,7 @@ However, the far more significant difference is the startup time of at least 30 
     ymode=log,
     log ticks with fixed point,
     xtick distance=4,
+    xmax=28,
     xlabel={difficulty (number of leading zeros)},
     ylabel={nonce search time (s)},
 ]
@@ -194,6 +194,7 @@ However, the far more significant difference is the startup time of at least 30 
 \begin{axis}[
     axis lines=left,
     xtick distance=4,
+    xmax=28,
     xlabel={difficulty (number of leading zeros)},
     ylabel={nonce search time (s)},
 ]
@@ -218,7 +219,88 @@ The simplest way of dividing the space with $n$ VMs numbered $0\leq i<n$ is for 
 
 In the local master program, the process is also much the same. One key distinction is the termination condition: if one success is reported then all instances are terminated, but only when all $n$ send failure are they terminated from failure. This is because one VM may exhaust its search space before another has found the golden nonce in its own search space, due to variation in run speed, and to ensure the golden nonce is found we must wait for all VMs to report failure before failing.
 
-For small values of $D$, the runtime for the parallelised golden nonce search increases linearly with $n$. This is because the computation is such a small part of the overall runtime, and the iteration to create the VMs (typically around 2 seconds per VM) increases directly proportionally to the number of VMs.
+The fixed startup overhead is similar to that with one VM, but as \autoref{fig:10-graph} on page~\pageref{fig:10-graph} shows, once the VMs are started the search is significantly faster.
+
+\begin{figure}[p]
+\noindent\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}
+\begin{axis}[
+    axis lines=left,
+    ymode=log,
+    log ticks with fixed point,
+    xtick distance=4,
+    xlabel={difficulty (number of leading zeros)},
+    ylabel={nonce search time (s)},
+]
+\addplot+[blue,mark options={fill=blue}]
+    table [col sep=comma,x=D,y=time] {local_timing.csv};
+\addplot+[red,mark options={fill=red}]
+    table [col sep=comma,x=D,y=time] {single_timing.csv};
+\addplot+[YellowOrange,mark options={fill=YellowOrange}]
+    table [col sep=comma,x=D,y=time] {para_timing_10.csv};
+\end{axis}
+\end{tikzpicture}%
+}
+\noindent\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}
+\begin{axis}[
+    axis lines=left,
+    xtick distance=4,
+    xlabel={difficulty (number of leading zeros)},
+    ylabel={nonce search time (s)},
+]
+\addplot+[blue,mark options={fill=blue}]
+    table [col sep=comma,x=D,y=time] {local_timing.csv};
+\addplot+[red,mark options={fill=red}]
+    table [col sep=comma,x=D,y=time] {single_timing.csv};
+\addplot+[YellowOrange,mark options={fill=YellowOrange}]
+    table [col sep=comma,x=D,y=time] {para_timing_10.csv};
+\end{axis}
+\end{tikzpicture}%
+}
+\caption{The runtime of nonce calculation with 10 VMs (in orange) compared to one VM (red) and locally (in blue), in both logarithmic (top) and linear (bottom) vertical scales.}\label{fig:10-graph}
+\end{figure}
+
+For small values of $D$, the runtime for the parallelised golden nonce search increases linearly with $n$. This is because the computation is such a small part of the overall runtime, and the iteration to create the VMs (typically around 2 seconds per VM) increases directly proportionally to the number of VMs. This can be seen in~\autoref{fig:D8-graph} with $D=8$.
+
+\begin{figure}
+\noindent\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}
+\begin{axis}[
+    axis lines=left,
+    xmin=0,
+    ymin=0,
+    ymax=40,
+    xtick distance=4,
+    xlabel={number of VMs},
+    ylabel={nonce search time (s)},
+]
+\addplot table [col sep=comma,x=n,y=time] {para_timing_D8.csv};
+\end{axis}
+\end{tikzpicture}%
+}
+\caption{The runtime of nonce calculation with a difficulty of 8.}\label{fig:D8-graph}
+\end{figure}
+
+However, once $D$ becomes sufficiently large, for example 24, the trend reverses for lower numbers of VMs, with the runtime increasing with fewer VMs. This is because the saved computation time becomes greater than the additional cost of startup. This can be seen in~\autoref{fig:D24-graph}, and is even more pronounced with larger values of $D$ still.
+
+\begin{figure}
+\noindent\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}
+\begin{axis}[
+    axis lines=left,
+    xmin=0,
+    ymin=0,
+    xtick distance=4,
+    xlabel={number of VMs},
+    ylabel={nonce search time (s)},
+]
+\addplot table [col sep=comma,x=n,y=time] {para_timing_D24.csv};
+\end{axis}
+\end{tikzpicture}%
+}
+\caption{The runtime of nonce calculation with a difficulty of 24.}\label{fig:D24-graph}
+\end{figure}
 
 This is implemented in the Python program using the command-line arguments \texttt{./nonce.py master <block> <difficulty> <VMs>}, for example \verb|./nonce.py master COMSM0010cloud 30 8| to find a 30-bit golden nonce using 8 VMs.
 
